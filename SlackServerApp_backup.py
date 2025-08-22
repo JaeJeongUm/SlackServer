@@ -10,7 +10,7 @@ import os
 import time
 from dotenv import load_dotenv
 
-# 환경 변수 로드 (.env 파일 사용)
+# 환경 변수 로드 (.env 파일 사용) 
 load_dotenv(dotenv_path='config/.env')
 
 # 환경 변수 확인 및 로드
