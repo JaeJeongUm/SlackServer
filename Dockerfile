@@ -18,9 +18,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 애플리케이션 코드 복사
 COPY . .
 
-# config 디렉토리 생성
-RUN mkdir -p /app/config
-
 # 포트 노출 (Flask 서버용)
 EXPOSE 5000
 
