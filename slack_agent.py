@@ -2,6 +2,7 @@ import os
 import requests
 import json
 import time
+import subprocess
 from dotenv import load_dotenv
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -41,214 +42,135 @@ slack_server = App(
 # Flask 서버 초기화
 flask_app = Flask(__name__)
 
-def sync_argocd_app(app_name):
-    """ArgoCD 앱 동기화 API 호출"""
+
+def execute_env_switch(environment):
+    """환경 전환 스크립트 실행"""
     try:
-        headers = {
-            "Authorization": f"Bearer {ARGOCD_AUTH_TOKEN}",
-            "Content-Type": "application/json"
-        }
-        
-        sync_data = {
-            "prune": False,
-            "dryRun": False,
-            "strategy": {
-                "apply": {
-                    "force": False
-                }
-            }
-        }
-        
-        url = f"{ARGOCD_SERVER_URL}/api/v1/applications/{app_name}/sync"
-        
-        response = requests.post(
-            url,
-            headers=headers,
-            json=sync_data,
-            timeout=30,
-            verify=False
+        # 스크립트 실행
+        result = subprocess.run(
+            ['/app/prd-pm-exchange.sh', environment],
+            capture_output=True,
+            text=True,
+            timeout=300  # 5분 타임아웃
         )
-        
-        if response.status_code == 200:
+
+        if result.returncode == 0:
             return {
                 "success": True,
-                "message": f"{app_name} 동기화 성공",
-                "app_name": app_name
+                "message": f"환경 전환 성공: {environment.upper()}",
+                "output": result.stdout,
+                "environment": environment.upper()
             }
         else:
             return {
                 "success": False,
-                "message": f"{app_name} 동기화 실패: {response.status_code}",
-                "error": response.text
+                "message": f"환경 전환 실패: {environment.upper()}",
+                "error": result.stderr,
+                "environment": environment.upper()
             }
-            
+
+    except subprocess.TimeoutExpired:
+        return {
+            "success": False,
+            "message": "환경 전환 타임아웃 (5분 초과)",
+            "environment": environment.upper()
+        }
     except Exception as e:
         return {
             "success": False,
-            "message": f"{app_name} 동기화 실패: {str(e)}"
+            "message": f"환경 전환 스크립트 실행 오류: {str(e)}",
+            "environment": environment.upper()
         }
 
-def call_argocd_pm_api():
-    """ArgoCD PM 환경 앱들 동기화"""
-    pm_apps = [
-        "k-rater-uq-remains-data-pm",
-        "k-rater-uq-summary-pm", 
-        "k-rater-uq-summary-customer-pm"
-    ]
-    
-    results = []
-    success_count = 0
-    
-    for app in pm_apps:
-        result = sync_argocd_app(app)
-        results.append(result)
-        if result["success"]:
-            success_count += 1
-    
-    return {
-        "success": success_count == len(pm_apps),
-        "message": f"PM 환경 동기화 완료: {success_count}/{len(pm_apps)}개 성공",
-        "environment": "PM",
-        "results": results,
-        "success_count": success_count,
-        "total_count": len(pm_apps)
-    }
 
-def call_argocd_prd_api():
-    """ArgoCD PRD 환경 앱들 동기화"""
-    prd_apps = [
-        "k-rater-uq-remains-data-prd",
-        "k-rater-uq-summary-prd",
-        "k-rater-uq-summary-customer-prd"
-    ]
-    
-    results = []
-    success_count = 0
-    
-    for app in prd_apps:
-        result = sync_argocd_app(app)
-        results.append(result)
-        if result["success"]:
-            success_count += 1
-    
-    return {
-        "success": success_count == len(prd_apps),
-        "message": f"PRD 환경 동기화 완료: {success_count}/{len(prd_apps)}개 성공",
-        "environment": "PRD", 
-        "results": results,
-        "success_count": success_count,
-        "total_count": len(prd_apps)
-    }
-
-# PM 동기화 메시지 핸들러
+# PM 환경 전환 메시지 핸들러
 @slack_server.message("pm")
 def handle_pm_message(message, say):
-    """PM 환경 앱들 동기화"""
+    """PM 환경으로 전환"""
     user_id = message.get('user', '')
-    
-    say("🔄 PM 환경 앱들을 동기화 중입니다... 잠시만 기다려주세요!")
-    
-    # PM 동기화 실행
-    result = call_argocd_pm_api()
-    
+
+    say("🔄 PM 환경으로 전환 중입니다... 잠시만 기다려주세요!")
+
+    # PM 환경 전환 실행
+    result = execute_env_switch("pm")
+
     if result["success"]:
-        apps_detail = "\n".join([f"• {r['app_name']}: {'✅' if r['success'] else '❌'}" 
-                                for r in result['results']])
-        
-        say(f"""🎉 **{result['message']}**
+        say(f"""🎉 **PM 환경 전환 완료!**
 
-📊 **동기화 결과:**
-{apps_detail}
-
-• 🏷️ 환경: {result['environment']}
-• 📊 성공률: {result['success_count']}/{result['total_count']}
-• 🕐 동기화 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}
-• 👤 요청자: <@{user_id}>
-
-✅ PM 환경 동기화 완료!""")
-    else:
-        failed_apps = [r for r in result['results'] if not r['success']]
-        error_detail = "\n".join([f"• {r['app_name']}: {r['message']}" for r in failed_apps])
-        
-        say(f"""❌ **PM 동기화 실패**
-
-🔥 실패한 앱들:
-{error_detail}
-
-📊 성공률: {result['success_count']}/{result['total_count']}
+✅ {result['message']}
+🏷️ 현재 환경: **{result['environment']}**
+🕐 전환 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}
 👤 요청자: <@{user_id}>
-🕐 실패 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}""")
 
-# PRD 동기화 메시지 핸들러  
+✅ PM 환경이 활성화되었습니다!""")
+    else:
+        say(f"""❌ **PM 환경 전환 실패**
+
+🔥 오류: {result['message']}
+👤 요청자: <@{user_id}>
+🕐 실패 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+⚠️ 환경 전환에 실패했습니다. 관리자에게 문의하세요.""")
+
+
+# PRD 환경 전환 메시지 핸들러
 @slack_server.message("prd")
 def handle_prd_message(message, say):
-    """PRD 환경 앱들 동기화"""
+    """PRD 환경으로 전환"""
     user_id = message.get('user', '')
-    
-    say("🚀 PRD 환경 앱들을 동기화 중입니다... 잠시만 기다려주세요!")
-    
-    # PRD 동기화 실행
-    result = call_argocd_prd_api()
-    
+
+    say("🚀 PRD 환경으로 전환 중입니다... 잠시만 기다려주세요!")
+
+    # PRD 환경 전환 실행
+    result = execute_env_switch("prd")
+
     if result["success"]:
-        apps_detail = "\n".join([f"• {r['app_name']}: {'✅' if r['success'] else '❌'}" 
-                                for r in result['results']])
-        
-        say(f"""🎉 **{result['message']}**
+        say(f"""🎉 **PRD 환경 전환 완료!**
 
-📊 **동기화 결과:**
-{apps_detail}
-
-• 🏷️ 환경: {result['environment']}  
-• 📊 성공률: {result['success_count']}/{result['total_count']}
-• 🕐 동기화 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}
-• 👤 요청자: <@{user_id}>
-
-🚀 PRD 환경 동기화 완료!""")
-    else:
-        failed_apps = [r for r in result['results'] if not r['success']]
-        error_detail = "\n".join([f"• {r['app_name']}: {r['message']}" for r in failed_apps])
-        
-        say(f"""❌ **PRD 동기화 실패**
-
-🔥 실패한 앱들:
-{error_detail}
-
-📊 성공률: {result['success_count']}/{result['total_count']}
+✅ {result['message']}
+🏷️ 현재 환경: **{result['environment']}**
+🕐 전환 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}
 👤 요청자: <@{user_id}>
-🕐 실패 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}""")
+
+🚀 PRD 환경이 활성화되었습니다!""")
+    else:
+        say(f"""❌ **PRD 환경 전환 실패**
+
+🔥 오류: {result['message']}
+👤 요청자: <@{user_id}>
+🕐 실패 시각: {time.strftime('%Y-%m-%d %H:%M:%S')}
+
+⚠️ 환경 전환에 실패했습니다. 관리자에게 문의하세요.""")
+
 
 # 도움말 메시지
 @slack_server.message("help")
 def handle_help_message(message, say):
     """도움말 메시지"""
-    help_text = """🤖 **ArgoCD 동기화 봇 사용법**
+    help_text = """🤖 **ArgoCD 환경 전환 봇 사용법**
 
 📋 **사용 가능한 명령어:**
-• `pm` - 🔄 PM 환경 앱들 동기화
-• `prd` - 🚀 PRD 환경 앱들 동기화  
+• `pm` - 🔄 PM 환경으로 전환
+• `prd` - 🚀 PRD 환경으로 전환  
 • `help` - 이 도움말 표시
 
-📱 **동기화되는 앱들:**
-**PM 환경:**
-• k-rater-uq-remains-data-pm
-• k-rater-uq-summary-pm
-• k-rater-uq-summary-customer-pm
-
-**PRD 환경:**
-• k-rater-uq-remains-data-prd
-• k-rater-uq-summary-prd
-• k-rater-uq-summary-customer-prd
-
 💡 **사용법:** 
-- PM 환경 앱들을 동기화하려면 `pm` 입력
-- PRD 환경 앱들을 동기화하려면 `prd` 입력
+- PM 환경으로 전환: `pm` 입력
+- PRD 환경으로 전환: `prd` 입력
 
 ⚠️ **주의사항:**
-- 동기화 작업은 약 30초 소요됩니다
-- 동기화 중에는 서비스 업데이트가 발생할 수 있습니다"""
-    
+- 환경 전환은 약 1-2분 소요됩니다
+- 환경 전환 시 ApplicationSet이 업데이트되고 앱들이 재배포됩니다
+- 한 번에 하나의 환경만 활성화됩니다
+
+🔧 **전환 과정:**
+1. Git 저장소 클론
+2. ApplicationSet YAML 파일 수정 (yq 사용)
+3. 변경사항 커밋 및 푸시
+4. ArgoCD ApplicationSet 동기화"""
+
     say(help_text)
+
 
 # Flask API 엔드포인트
 @flask_app.route('/health', methods=['GET'])
@@ -256,31 +178,31 @@ def health_check():
     """헬스 체크 엔드포인트"""
     return {
         "status": "healthy",
-        "message": "ArgoCD 동기화 봇 실행 중",
+        "message": "ArgoCD 환경 전환 봇 실행 중",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
 
-@flask_app.route('/sync-env', methods=['POST'])
-def sync_environment():
-    """외부에서 환경 동기화를 트리거하는 API"""
+
+@flask_app.route('/switch-env', methods=['POST'])
+def switch_environment():
+    """외부에서 환경 전환을 트리거하는 API"""
     try:
         data = request.get_json() or {}
         env = data.get('environment', '').lower()
-        
-        if env == 'pm':
-            result = call_argocd_pm_api()
-        elif env == 'prd':
-            result = call_argocd_prd_api()
-        else:
+
+        if env not in ['pm', 'prd']:
             return {"error": "Invalid environment. Use 'pm' or 'prd'"}, 400
-        
+
+        result = execute_env_switch(env)
+
         if result['success']:
             return {"status": "success", "result": result}
         else:
             return {"status": "error", "message": result['message'], "details": result}, 500
-            
+
     except Exception as e:
         return {"status": "error", "message": str(e)}, 500
+
 
 def run_flask_server():
     """Flask 서버 실행 함수"""
@@ -296,6 +218,7 @@ def run_flask_server():
     except Exception as e:
         print(f"Flask 서버 오류: {e}")
 
+
 def run_slack_server():
     """Slack 서버 실행 함수"""
     print("⚡ Slack 서버 시작")
@@ -305,28 +228,31 @@ def run_slack_server():
     except Exception as e:
         print(f"Slack 서버 오류: {e}")
 
+
 def main():
     """메인 실행 함수"""
     print("=" * 60)
-    print("🤖 ArgoCD 동기화 봇")
-    print("🔄 PM/PRD 환경 앱 동기화")
+    print("🤖 ArgoCD 환경 전환 봇")
+    print("🔄 PM/PRD 환경 전환 자동화")
     print("=" * 60)
-    
+
     print("✅ 환경 변수 로드 완료")
     print("🔗 Flask API: http://localhost:5000")
     print("💡 사용법: Slack에서 'pm' 또는 'prd' 입력")
+    print("🔧 스크립트: /app/prd-pm-exchange.sh")
     print("=" * 60)
-    
+
     # Flask 서버를 별도 스레드에서 실행
     flask_thread = Thread(
         target=run_flask_server,
-        name="FlaskServerThread", 
+        name="FlaskServerThread",
         daemon=True
     )
     flask_thread.start()
-    
+
     # Slack 서버를 메인 스레드에서 실행
     run_slack_server()
+
 
 if __name__ == '__main__':
     main()
